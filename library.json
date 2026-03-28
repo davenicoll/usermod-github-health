@@ -1,0 +1,10 @@
+{
+  "name:": "GitHub Health Usermod",
+  "version": "0.1.0",
+  "description": "WLED usermod that monitors GitHub status and blinks LEDs red when unhealthy",
+  "keywords": ["wled", "github", "health", "status", "notification"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/davenicoll/usermod-github-health"
+  }
+}
