@@ -1,5 +1,9 @@
 # GitHub Health Usermod for WLED
 
+Built for the [Octolamp](https://github.com/martinwoodward/octolamp).
+
+![Octolamp](https://raw.githubusercontent.com/martinwoodward/octolamp/main/images/IMG_9122.jpg)
+
 A WLED usermod that polls the [GitHub Status API](https://www.githubstatus.com/api/v2/status.json) and blinks all LEDs red when GitHub reports any incident.
 
 When GitHub recovers, the strip restores its previous state.
