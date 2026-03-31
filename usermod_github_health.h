@@ -159,10 +159,6 @@ class GithubHealthUsermod : public Usermod {
     uint16_t getId() override {
       return USERMOD_ID_UNSPECIFIED;
     }
-
-    const char* getUiName() override {
-      return _name;
-    }
 };
 
 const char GithubHealthUsermod::_name[] PROGMEM = "GitHub Health";

@@ -6,17 +6,64 @@ When GitHub recovers, the strip restores its previous state.
 
 ## Installation
 
-Copy `usermod_github_health.h` into your WLED `usermods/` directory, then register it in `usermods_list.cpp`:
+### Prerequisites
 
-```cpp
-#include "../usermods/usermod_github_health.h"
+Install PlatformIO and esptool:
 
-void registerUsermods() {
-  UsermodManager::add(new GithubHealthUsermod());
-}
+```bash
+pip3 install platformio esptool
 ```
 
-Copy `platformio_override.ini` to your WLED root if you need a dedicated build environment.
+### Clone WLED
+
+```bash
+git clone --depth 1 --branch v0.15.4 https://github.com/wled/WLED.git
+cd WLED
+```
+
+### Add the usermod
+
+Copy the usermod header into WLED's usermods directory:
+
+```bash
+mkdir -p usermods/github_health
+cp /path/to/usermod_github_health.h usermods/github_health/
+```
+
+Register it in `wled00/usermods_list.cpp`. Add the include near the other usermod includes:
+
+```cpp
+#ifdef USERMOD_GITHUB_HEALTH
+#include "../usermods/github_health/usermod_github_health.h"
+#endif
+```
+
+And add the registration inside `registerUsermods()`:
+
+```cpp
+#ifdef USERMOD_GITHUB_HEALTH
+UsermodManager::add(new GithubHealthUsermod());
+#endif
+```
+
+### Configure the build
+
+Copy `platformio_override.ini` to the WLED root directory. To set your upload port, add these lines to the `[env:github_health_esp32]` section:
+
+```ini
+upload_port = /dev/cu.wchusbserialXXXXX
+```
+
+Replace the port with your device's serial port (check `ls /dev/cu.*` after connecting).
+
+### Build and flash
+
+Put your ESP32 into bootloader mode: hold **BOOT**, press **RESET**, release **BOOT**.
+
+```bash
+cd WLED
+pio run -e github_health_esp32 -t upload
+```
 
 ## Configuration
 
