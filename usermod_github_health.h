@@ -22,16 +22,26 @@ class GithubHealthUsermod : public Usermod {
     bool     githubUnhealthy  = false;
     bool     blinkOn          = false;
 
+    // which indicator levels trigger the alert
+    bool     alertOnMinor     = true;
+    bool     alertOnMajor     = true;
+    bool     alertOnCritical  = true;
+
     uint32_t checkIntervalMs  = 60000;   // check every 60s
     uint32_t blinkIntervalMs  = 500;     // blink toggle every 500ms
     uint32_t lastCheckTime    = 0;
     uint32_t lastBlinkToggle  = 0;
 
-    // saved state to restore when GitHub recovers
-    byte     savedBrightness  = 0;
-    uint8_t  savedMode        = 0;
-    uint32_t savedColor       = 0;
-    bool     stateSaved       = false;
+    // saved state per segment to restore when GitHub recovers
+    static const uint8_t MAX_SEGMENTS = 16;
+    struct SegState {
+      uint8_t  mode;
+      uint32_t color;
+    };
+    byte     savedBrightness           = 0;
+    SegState savedSegments[MAX_SEGMENTS];
+    uint8_t  savedSegCount             = 0;
+    bool     stateSaved                = false;
 
     void checkGithubHealth() {
       if (WiFi.status() != WL_CONNECTED) return;
@@ -52,9 +62,16 @@ class GithubHealthUsermod : public Usermod {
 
       if (httpCode == HTTP_CODE_OK) {
         String payload = http.getString();
-        // look for "indicator":"none" which means all systems operational
-        bool healthy = payload.indexOf("\"indicator\":\"none\"") >= 0;
-        setHealthState(!healthy);
+        bool shouldAlert = false;
+
+        if (payload.indexOf("\"indicator\":\"none\"") < 0) {
+          // not healthy — check which level
+          if (alertOnMinor    && payload.indexOf("\"indicator\":\"minor\"")    >= 0) shouldAlert = true;
+          if (alertOnMajor    && payload.indexOf("\"indicator\":\"major\"")    >= 0) shouldAlert = true;
+          if (alertOnCritical && payload.indexOf("\"indicator\":\"critical\"") >= 0) shouldAlert = true;
+        }
+
+        setHealthState(shouldAlert);
       } else {
         // can't reach status page — treat as unhealthy
         setHealthState(true);
@@ -69,18 +86,24 @@ class GithubHealthUsermod : public Usermod {
       githubUnhealthy = unhealthy;
 
       if (githubUnhealthy) {
-        // save current strip state so we can restore later
-        Segment& seg = strip.getMainSegment();
+        // save current state for all segments
         savedBrightness = bri;
-        savedMode       = seg.mode;
-        savedColor      = seg.colors[0];
-        stateSaved      = true;
+        savedSegCount = min((uint8_t)strip.getSegmentsNum(), MAX_SEGMENTS);
+        for (uint8_t i = 0; i < savedSegCount; i++) {
+          Segment& seg = strip.getSegment(i);
+          savedSegments[i].mode  = seg.mode;
+          savedSegments[i].color = seg.colors[0];
+        }
+        stateSaved = true;
       } else if (stateSaved) {
-        // GitHub recovered — restore previous state
-        Segment& seg = strip.getMainSegment();
+        // GitHub recovered — restore previous state for all segments
         bri = savedBrightness;
-        seg.setMode(savedMode);
-        seg.setColor(0, savedColor);
+        uint8_t numSegs = min((uint8_t)strip.getSegmentsNum(), savedSegCount);
+        for (uint8_t i = 0; i < numSegs; i++) {
+          Segment& seg = strip.getSegment(i);
+          seg.setMode(savedSegments[i].mode);
+          seg.setColor(0, savedSegments[i].color);
+        }
         stateUpdated(CALL_MODE_DIRECT_CHANGE);
         stateSaved = false;
       }
@@ -92,12 +115,14 @@ class GithubHealthUsermod : public Usermod {
       lastBlinkToggle = now;
 
       blinkOn = !blinkOn;
-      Segment& seg = strip.getMainSegment();
 
       if (blinkOn) {
         bri = 255;
-        seg.setMode(FX_MODE_STATIC);
-        seg.setColor(0, RED);
+        for (unsigned i = 0; i < strip.getSegmentsNum(); i++) {
+          Segment& seg = strip.getSegment(i);
+          seg.setMode(FX_MODE_STATIC);
+          seg.setColor(0, RED);
+        }
       } else {
         bri = 0;
       }
@@ -140,18 +165,24 @@ class GithubHealthUsermod : public Usermod {
 
     void addToConfig(JsonObject& root) override {
       JsonObject top = root.createNestedObject(FPSTR(_name));
-      top["enabled"]       = enabled;
-      top["checkInterval"] = checkIntervalMs / 1000; // store as seconds
-      top["blinkInterval"] = blinkIntervalMs;
+      top["enabled"]        = enabled;
+      top["checkInterval"]  = checkIntervalMs / 1000; // store as seconds
+      top["blinkInterval"]  = blinkIntervalMs;
+      top["alertOnMinor"]   = alertOnMinor;
+      top["alertOnMajor"]   = alertOnMajor;
+      top["alertOnCritical"]= alertOnCritical;
     }
 
     bool readFromConfig(JsonObject& root) override {
       JsonObject top = root[FPSTR(_name)];
       if (top.isNull()) return false;
 
-      enabled         = top["enabled"]       | enabled;
+      enabled         = top["enabled"]        | enabled;
       checkIntervalMs = (top["checkInterval"] | (checkIntervalMs / 1000)) * 1000;
       blinkIntervalMs = top["blinkInterval"]  | blinkIntervalMs;
+      alertOnMinor    = top["alertOnMinor"]    | alertOnMinor;
+      alertOnMajor    = top["alertOnMajor"]    | alertOnMajor;
+      alertOnCritical = top["alertOnCritical"] | alertOnCritical;
 
       return !top.isNull();
     }

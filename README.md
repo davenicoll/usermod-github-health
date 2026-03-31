@@ -78,10 +78,15 @@ Settings are exposed in the WLED Config UI under "GitHub Health":
 | enabled | true | Enable/disable the health check |
 | checkInterval | 60 | Seconds between status checks |
 | blinkInterval | 500 | Milliseconds between blink toggles |
+| alertOnMinor | true | Alert on `minor` status indicator |
+| alertOnMajor | true | Alert on `major` status indicator |
+| alertOnCritical | true | Alert on `critical` status indicator |
+
+The GitHub Status API returns one of four indicator levels: `none`, `minor`, `major`, or `critical`. By default the lamp alerts on all non-healthy states. Disable individual levels to only react to the severities you care about.
 
 ## How it works
 
 1. Every `checkInterval` seconds, makes an HTTPS GET to `githubstatus.com`
 2. Parses the `status.indicator` field — `"none"` means healthy
-3. If unhealthy (or the status page is unreachable), saves the current strip state and blinks red
-4. When GitHub recovers, restores the previous strip state
+3. If the indicator matches an enabled alert level, saves the state of all segments and blinks them red
+4. When GitHub recovers, restores the previous state for all segments
