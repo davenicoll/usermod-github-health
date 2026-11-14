@@ -6,8 +6,9 @@
 #endif
 
 #ifdef ESP32
-  #include <HTTPClient.h>
-  #include <WiFiClientSecure.h>
+  // Implemented in github_health_fetch.cpp (TLS via ESP_SSLClient; see note there).
+  int githubHealthFetch(const char* host, const char* path, char* out, size_t outSize);
+  extern int githubHealthLastSSLError;
 #elif defined(ESP8266)
   #include <ESP8266HTTPClient.h>
   #include <WiFiClientSecureBearSSL.h>
@@ -20,7 +21,6 @@ class GithubHealthUsermod : public Usermod {
     bool     enabled          = true;
     bool     wifiConnected    = false;
     bool     githubUnhealthy  = false;
-    bool     blinkOn          = false;
 
     // which indicator levels trigger the alert
     bool     alertOnMinor     = true;
@@ -28,40 +28,67 @@ class GithubHealthUsermod : public Usermod {
     bool     alertOnCritical  = true;
 
     uint32_t checkIntervalMs  = 60000;   // check every 60s
-    uint32_t blinkIntervalMs  = 500;     // blink toggle every 500ms
     uint32_t lastCheckTime    = 0;
-    uint32_t lastBlinkToggle  = 0;
+    int      lastHttpCode     = 0;       // result of the last check, shown in Info
+    int      lastSSLError     = 0;
 
     // saved state per segment to restore when GitHub recovers
     static const uint8_t MAX_SEGMENTS = 16;
     struct SegState {
       uint8_t  mode;
-      uint32_t color;
+      uint8_t  palette;
+      uint8_t  speed;
+      uint8_t  intensity;
+      uint32_t colors[NUM_COLORS];
     };
+
+    // alert look: red and pink twinkles over a faint pink glow
+    static const uint8_t  ALERT_FX        = FX_MODE_TWINKLEFOX;
+    static const uint8_t  ALERT_PALETTE   = 5;     // "* Colors Only": color 1/2/3 bands
+    static const uint8_t  ALERT_SPEED     = 128;
+    static const uint8_t  ALERT_INTENSITY = 200;   // twinkle rate
+    static const uint32_t ALERT_COLORS[NUM_COLORS]; // red, pink (also bg glow), red
     byte     savedBrightness           = 0;
     SegState savedSegments[MAX_SEGMENTS];
     uint8_t  savedSegCount             = 0;
     bool     stateSaved                = false;
 
-    void checkGithubHealth() {
-      if (WiFi.status() != WL_CONNECTED) return;
+    static constexpr const char* STATUS_HOST = "www.githubstatus.com";
+    static constexpr const char* STATUS_PATH = "/api/v2/status.json";
+    static const size_t MAX_PAYLOAD = 4096; // headers + ~300 byte body
 
+    // Fetches the status page into payload; returns the HTTP status code (or <= 0 on failure).
+    int fetchStatus(String& payload) {
       #ifdef ESP32
-        WiFiClientSecure client;
-        client.setInsecure(); // skip cert verification (status page, not sensitive)
+        static char buf[MAX_PAYLOAD]; // static: keep it off the loop task stack
+        int httpCode = githubHealthFetch(STATUS_HOST, STATUS_PATH, buf, sizeof(buf));
+        payload = buf;
+        return httpCode;
       #elif defined(ESP8266)
         BearSSL::WiFiClientSecure client;
         client.setInsecure();
+
+        HTTPClient http;
+        http.begin(client, String(F("https://")) + STATUS_HOST + STATUS_PATH);
+        http.setTimeout(5000);
+        int httpCode = http.GET();
+        if (httpCode == HTTP_CODE_OK) payload = http.getString();
+        http.end();
+        return httpCode;
+      #endif
+    }
+
+    void checkGithubHealth() {
+      if (WiFi.status() != WL_CONNECTED) return;
+
+      String payload;
+      int httpCode = fetchStatus(payload);
+      lastHttpCode = httpCode;
+      #ifdef ESP32
+        lastSSLError = githubHealthLastSSLError;
       #endif
 
-      HTTPClient http;
-      http.begin(client, F("https://www.githubstatus.com/api/v2/status.json"));
-      http.setTimeout(5000);
-
-      int httpCode = http.GET();
-
-      if (httpCode == HTTP_CODE_OK) {
-        String payload = http.getString();
+      if (httpCode == 200) {
         bool shouldAlert = false;
 
         if (payload.indexOf("\"indicator\":\"none\"") < 0) {
@@ -77,7 +104,24 @@ class GithubHealthUsermod : public Usermod {
         setHealthState(true);
       }
 
-      http.end();
+      // re-assert the alert look if something (e.g. a timed preset) replaced it
+      if (githubUnhealthy && applyAlertLook()) stateUpdated(CALL_MODE_DIRECT_CHANGE);
+    }
+
+    // Sets the twinkle alert on every segment; returns true if anything changed.
+    bool applyAlertLook() {
+      bool changed = false;
+      for (unsigned i = 0; i < strip.getSegmentsNum(); i++) {
+        Segment& seg = strip.getSegment(i);
+        if (seg.mode != ALERT_FX)           { seg.setMode(ALERT_FX); changed = true; }
+        if (seg.palette != ALERT_PALETTE)   { seg.setPalette(ALERT_PALETTE); changed = true; }
+        if (seg.speed != ALERT_SPEED)       { seg.speed = ALERT_SPEED; changed = true; }
+        if (seg.intensity != ALERT_INTENSITY) { seg.intensity = ALERT_INTENSITY; changed = true; }
+        for (uint8_t c = 0; c < NUM_COLORS; c++) {
+          if (seg.colors[c] != ALERT_COLORS[c]) { seg.setColor(c, ALERT_COLORS[c]); changed = true; }
+        }
+      }
+      return changed;
     }
 
     void setHealthState(bool unhealthy) {
@@ -91,42 +135,35 @@ class GithubHealthUsermod : public Usermod {
         savedSegCount = min((uint8_t)strip.getSegmentsNum(), MAX_SEGMENTS);
         for (uint8_t i = 0; i < savedSegCount; i++) {
           Segment& seg = strip.getSegment(i);
-          savedSegments[i].mode  = seg.mode;
-          savedSegments[i].color = seg.colors[0];
+          SegState& st = savedSegments[i];
+          st.mode      = seg.mode;
+          st.palette   = seg.palette;
+          st.speed     = seg.speed;
+          st.intensity = seg.intensity;
+          for (uint8_t c = 0; c < NUM_COLORS; c++) st.colors[c] = seg.colors[c];
         }
         stateSaved = true;
+
+        bri = 255; // light up to show the alert (a timer may still switch it off later)
+        applyAlertLook();
+        stateUpdated(CALL_MODE_DIRECT_CHANGE);
       } else if (stateSaved) {
-        // GitHub recovered — restore previous state for all segments
-        bri = savedBrightness;
+        // GitHub recovered — restore previous state for all segments.
+        // If the lamp was switched off during the alert (e.g. by a timer), leave it off.
+        if (bri) bri = savedBrightness;
         uint8_t numSegs = min((uint8_t)strip.getSegmentsNum(), savedSegCount);
         for (uint8_t i = 0; i < numSegs; i++) {
           Segment& seg = strip.getSegment(i);
-          seg.setMode(savedSegments[i].mode);
-          seg.setColor(0, savedSegments[i].color);
+          SegState& st = savedSegments[i];
+          seg.setMode(st.mode);
+          seg.setPalette(st.palette);
+          seg.speed     = st.speed;
+          seg.intensity = st.intensity;
+          for (uint8_t c = 0; c < NUM_COLORS; c++) seg.setColor(c, st.colors[c]);
         }
         stateUpdated(CALL_MODE_DIRECT_CHANGE);
         stateSaved = false;
       }
-    }
-
-    void handleBlink() {
-      uint32_t now = millis();
-      if (now - lastBlinkToggle < blinkIntervalMs) return;
-      lastBlinkToggle = now;
-
-      blinkOn = !blinkOn;
-
-      if (blinkOn) {
-        bri = 255;
-        for (unsigned i = 0; i < strip.getSegmentsNum(); i++) {
-          Segment& seg = strip.getSegment(i);
-          seg.setMode(FX_MODE_STATIC);
-          seg.setColor(0, RED);
-        }
-      } else {
-        bri = 0;
-      }
-      stateUpdated(CALL_MODE_DIRECT_CHANGE);
     }
 
   public:
@@ -144,11 +181,6 @@ class GithubHealthUsermod : public Usermod {
         lastCheckTime = now;
         checkGithubHealth();
       }
-
-      // blink red while unhealthy
-      if (githubUnhealthy) {
-        handleBlink();
-      }
     }
 
     void connected() override {
@@ -160,14 +192,20 @@ class GithubHealthUsermod : public Usermod {
       if (user.isNull()) user = root.createNestedObject("u");
       JsonArray gh = user.createNestedArray(FPSTR(_name));
       gh.add(githubUnhealthy ? F("unhealthy") : F("healthy"));
-      gh.add(F(" "));
+      if (lastHttpCode == 200 || lastHttpCode == 0) {
+        gh.add(F(" "));
+      } else {
+        // status page unreachable: show why (HTTP status, or -1 TCP / -2 TLS / -3 response)
+        char detail[40];
+        snprintf(detail, sizeof(detail), " (check failed: %d, tls %d)", lastHttpCode, lastSSLError);
+        gh.add(detail);
+      }
     }
 
     void addToConfig(JsonObject& root) override {
       JsonObject top = root.createNestedObject(FPSTR(_name));
       top["enabled"]        = enabled;
       top["checkInterval"]  = checkIntervalMs / 1000; // store as seconds
-      top["blinkInterval"]  = blinkIntervalMs;
       top["alertOnMinor"]   = alertOnMinor;
       top["alertOnMajor"]   = alertOnMajor;
       top["alertOnCritical"]= alertOnCritical;
@@ -179,7 +217,6 @@ class GithubHealthUsermod : public Usermod {
 
       enabled         = top["enabled"]        | enabled;
       checkIntervalMs = (top["checkInterval"] | (checkIntervalMs / 1000)) * 1000;
-      blinkIntervalMs = top["blinkInterval"]  | blinkIntervalMs;
       alertOnMinor    = top["alertOnMinor"]    | alertOnMinor;
       alertOnMajor    = top["alertOnMajor"]    | alertOnMajor;
       alertOnCritical = top["alertOnCritical"] | alertOnCritical;
@@ -193,3 +230,4 @@ class GithubHealthUsermod : public Usermod {
 };
 
 const char GithubHealthUsermod::_name[] PROGMEM = "GitHub Health";
+const uint32_t GithubHealthUsermod::ALERT_COLORS[NUM_COLORS] = { RED, PINK, RED };
