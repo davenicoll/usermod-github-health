@@ -83,7 +83,7 @@ The GitHub Status API returns one of four indicator levels: `none`, `minor`, `ma
 4. While the alert lasts, each check puts the twinkle back if something else replaced it (a timed preset, for example). Brightness is left alone, so a timer can still switch the lamp off overnight.
 5. When GitHub recovers, it restores each segment's saved state. If the lamp was switched off during the alert, it stays off.
 
-The **Info** page shows the usermod's state. When a check fails, it adds the reason: an HTTP status code, or `-1` (TCP connect failed), `-2` (TLS handshake failed), or `-3` (no valid response), followed by the BearSSL error code.
+The **Info** page shows the usermod's state. When a check fails, it adds the reason: an HTTP status code, or `-1` (TCP connect failed), `-2` (TLS handshake failed), or `-3` (no valid response), followed by the BearSSL error code and the number of bytes received.
 
 ### Why a separate TLS library?
 

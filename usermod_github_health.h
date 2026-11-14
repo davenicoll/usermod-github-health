@@ -8,7 +8,9 @@
 #ifdef ESP32
   // Implemented in github_health_fetch.cpp (TLS via ESP_SSLClient; see note there).
   int githubHealthFetch(const char* host, const char* path, char* out, size_t outSize);
-  extern int githubHealthLastSSLError;
+  extern int    githubHealthLastSSLError;
+  extern size_t githubHealthLastBytes;
+  extern char   githubHealthLastDiag[];
 #elif defined(ESP8266)
   #include <ESP8266HTTPClient.h>
   #include <WiFiClientSecureBearSSL.h>
@@ -31,6 +33,7 @@ class GithubHealthUsermod : public Usermod {
     uint32_t lastCheckTime    = 0;
     int      lastHttpCode     = 0;       // result of the last check, shown in Info
     int      lastSSLError     = 0;
+    size_t   lastBytes        = 0;
 
     // saved state per segment to restore when GitHub recovers
     static const uint8_t MAX_SEGMENTS = 16;
@@ -86,6 +89,7 @@ class GithubHealthUsermod : public Usermod {
       lastHttpCode = httpCode;
       #ifdef ESP32
         lastSSLError = githubHealthLastSSLError;
+        lastBytes    = githubHealthLastBytes;
       #endif
 
       if (httpCode == 200) {
@@ -196,8 +200,12 @@ class GithubHealthUsermod : public Usermod {
         gh.add(F(" "));
       } else {
         // status page unreachable: show why (HTTP status, or -1 TCP / -2 TLS / -3 response)
-        char detail[40];
-        snprintf(detail, sizeof(detail), " (check failed: %d, tls %d)", lastHttpCode, lastSSLError);
+        char detail[128];
+        #ifdef ESP32
+          snprintf(detail, sizeof(detail), " (check failed: %d, tls %d, %u bytes; %s)", lastHttpCode, lastSSLError, (unsigned)lastBytes, githubHealthLastDiag);
+        #else
+          snprintf(detail, sizeof(detail), " (check failed: %d)", lastHttpCode);
+        #endif
         gh.add(detail);
       }
     }
